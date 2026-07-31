@@ -358,18 +358,22 @@ def get_pipeline():
     Your full application pipeline - all applied jobs with their current
     stage, sorted by applied_at so you see oldest applications first
     (most likely to need a follow-up nudge).
+
+    Technical summary:
+    - Uses a single SQL OUTER JOIN (Application + Job) to avoid N+1 queries.
+    - Preserves the same response shape while reducing DB round-trips.
     """
     session = SessionLocal()
     try:
-        applications = (
-            session.query(Application)
+        application_rows = (
+            session.query(Application, Job)
+            .outerjoin(Job, Job.id == Application.job_id)
             .order_by(Application.applied_at.asc())
             .all()
         )
         result = []
         now = datetime.now(timezone.utc).replace(tzinfo=None)  # naive UTC for SQLite comparison
-        for app in applications:
-            job = session.query(Job).filter(Job.id == app.job_id).first()
+        for app, job in application_rows:
             # SQLite returns datetimes as naive (no tzinfo) even when stored
             # with timezone.utc - strip tzinfo from both sides to compare safely.
             applied = app.applied_at.replace(tzinfo=None) if app.applied_at else None
