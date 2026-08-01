@@ -19,6 +19,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 
 from models import Job, Application, SessionLocal, init_db
 from relevance import categorize_job
@@ -177,7 +178,11 @@ def create_manual_job(job_in: ManualJobCreate):
             status="new",
         )
         session.add(job)
-        session.commit()
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            raise HTTPException(409, "This job (same source/company/title/url) is already saved")
         session.refresh(job)
         return job
     finally:
@@ -299,7 +304,11 @@ def create_application(job_id: int, app_in: ApplicationCreate):
         )
         job.status = "applied"  # keep the job-level status in sync
         session.add(application)
-        session.commit()
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            raise HTTPException(409, "An application already exists for this job. Use PATCH to update it.")
         session.refresh(application)
         return application
     finally:
