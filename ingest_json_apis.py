@@ -39,6 +39,7 @@ from models import Job, SessionLocal, init_db
 from relevance import categorize_job, extract_headquarters
 from eu_filter import classify_eu_compatibility, is_switzerland
 from resume_match import compute_resume_match
+from ingest_common import get_existing_dedup_hashes
 
 REMOTIVE_API_URL = "https://remotive.com/api/remote-jobs?category=software-dev"
 WORKING_NOMADS_API_URL = "https://www.workingnomads.com/api/exposed_jobs/"
@@ -238,14 +239,17 @@ def store_jobs(job_dicts: list[dict]) -> dict:
     counts = {"new": 0, "skipped": 0, "web_frontend": 0, "mobile_dev": 0, "full_stack_react": 0}
 
     try:
+        dedup_hashes = [job_data["dedup_hash"] for job_data in job_dicts]
+        existing_hashes = get_existing_dedup_hashes(session, dedup_hashes)
+
         for job_data in job_dicts:
-            existing = session.query(Job).filter_by(dedup_hash=job_data["dedup_hash"]).first()
-            if existing:
+            if job_data["dedup_hash"] in existing_hashes:
                 counts["skipped"] += 1
                 continue
 
             job = Job(**job_data)
             session.add(job)
+            existing_hashes.add(job_data["dedup_hash"])
             counts["new"] += 1
             if job_data["category"] in ("web_frontend", "mobile_dev", "full_stack_react"):
                 counts[job_data["category"]] += 1

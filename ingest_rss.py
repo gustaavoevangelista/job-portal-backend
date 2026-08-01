@@ -21,6 +21,7 @@ from models import Job, SessionLocal, init_db
 from relevance import categorize_job, extract_headquarters
 from eu_filter import classify_eu_compatibility, is_switzerland
 from resume_match import compute_resume_match
+from ingest_common import get_existing_dedup_hashes
 
 # Each entry: (source_name, feed_url)
 RSS_SOURCES = [
@@ -91,16 +92,18 @@ def ingest_rss_source(source_name: str, feed_url: str) -> dict:
     counts = {"new": 0, "skipped": 0, "web_frontend": 0, "mobile_dev": 0, "full_stack_react": 0}
 
     try:
-        for entry in feed.entries:
-            job_data = parse_entry(source_name, entry)
+        parsed_jobs = [parse_entry(source_name, entry) for entry in feed.entries]
+        dedup_hashes = [job_data["dedup_hash"] for job_data in parsed_jobs]
+        existing_hashes = get_existing_dedup_hashes(session, dedup_hashes)
 
-            existing = session.query(Job).filter_by(dedup_hash=job_data["dedup_hash"]).first()
-            if existing:
+        for job_data in parsed_jobs:
+            if job_data["dedup_hash"] in existing_hashes:
                 counts["skipped"] += 1
                 continue
 
             job = Job(**job_data)
             session.add(job)
+            existing_hashes.add(job_data["dedup_hash"])
             counts["new"] += 1
             if job_data["category"] in ("web_frontend", "mobile_dev", "full_stack_react"):
                 counts[job_data["category"]] += 1
