@@ -359,7 +359,7 @@ def get_pipeline():
     stage, sorted by applied_at so you see oldest applications first
     (most likely to need a follow-up nudge).
 
-    Technical summary:
+    New mlrd feature:  
     - Uses a single SQL OUTER JOIN (Application + Job) to avoid N+1 queries.
     - Preserves the same response shape while reducing DB round-trips.
     """
