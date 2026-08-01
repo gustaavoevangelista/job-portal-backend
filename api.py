@@ -12,7 +12,7 @@ Docs auto-generated at: http://localhost:8000/docs
 """
 
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query
@@ -404,7 +404,13 @@ def get_pipeline():
 
 @app.get("/stats")
 def get_stats():
-    """Quick overview - counts by category, EU compatibility, status, and pipeline stage."""
+    """
+    Quick overview - counts by category, EU compatibility, status, and pipeline stage.
+
+    Technical summary:
+    - Computes follow-up count with a single SQL aggregate query.
+    - Avoids loading all Application rows into Python memory.
+    """
     session = SessionLocal()
     try:
         total = session.query(func.count(Job.id)).scalar()
@@ -436,14 +442,15 @@ def get_stats():
         )
 
         # How many active applications are older than 10 days and might
-        # need a follow-up (not yet resolved - no offer/rejection/ghosted)
-        now = datetime.now(timezone.utc).replace(tzinfo=None)  # naive UTC for SQLite comparison
-        all_apps = session.query(Application).all()
-        needs_followup = sum(
-            1 for a in all_apps
-            if a.applied_at
-            and (now - a.applied_at.replace(tzinfo=None)).days >= 10
-            and a.stage not in ("offer", "rejected", "ghosted")
+        # need a follow-up (not yet resolved - no offer/rejection/ghosted).
+        # Keep naive UTC cutoff for SQLite-compatible datetime comparison.
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=10)
+        needs_followup = (
+            session.query(func.count(Application.id))
+            .filter(Application.applied_at.isnot(None))
+            .filter(Application.applied_at <= cutoff)
+            .filter(~Application.stage.in_(("offer", "rejected", "ghosted")))
+            .scalar()
         )
 
         return {
