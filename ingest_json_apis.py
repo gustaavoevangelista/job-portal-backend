@@ -41,6 +41,8 @@ from eu_filter import classify_eu_compatibility, is_switzerland
 from resume_match import compute_resume_match
 from ingest_common import get_existing_dedup_hashes
 
+from validators import normalize_text, validate_url  # NOVO
+
 REMOTIVE_API_URL = "https://remotive.com/api/remote-jobs?category=software-dev"
 WORKING_NOMADS_API_URL = "https://www.workingnomads.com/api/exposed_jobs/"
 
@@ -89,10 +91,60 @@ def _parse_iso_date(date_str: str):
         return None
 
 
+# def fetch_remotive_jobs() -> list[dict]:
+#     """
+#     Fetch and normalize jobs from Remotive's public API.
+#     Returns a list of dicts matching our Job shape (un-saved).
+#     """
+#     response = httpx.get(REMOTIVE_API_URL, headers=HEADERS, timeout=15)
+#     response.raise_for_status()
+#     payload = response.json()
+
+#     jobs = []
+#     for entry in payload.get("jobs", []):
+#         title = entry.get("title", "").strip()
+#         company = entry.get("company_name", "").strip()
+#         url = entry.get("url", "").strip()
+#         description = entry.get("description", "") or ""
+#         # Remotive gives us this directly - no regex needed, unlike WWR
+#         location_raw = entry.get("candidate_required_location", "") or ""
+#         posted_at = _parse_iso_date(entry.get("publication_date", ""))
+
+#         category, score = categorize_job(title, description)
+#         eu_compat = classify_eu_compatibility(location_raw)
+#         switzerland_flag = is_switzerland(location_raw)
+#         match_result = compute_resume_match(title, description)
+#         # Remotive doesn't embed "Headquarters:" in description like WWR does,
+#         # so headquarters_raw stays empty here - candidate_required_location
+#         # carries the equivalent information for this source, stored separately.
+
+#         jobs.append({
+#             "dedup_hash": make_dedup_hash("remotive", title, company, url),
+#             "source": "remotive",
+#             "title": title,
+#             "company": company,
+#             "headquarters_raw": location_raw,  # repurposed: this source's location signal
+#             "url": url,
+#             "description": description,
+#             "posted_at": posted_at,
+#             "category": category,
+#             "relevance_score": score,
+#             "eu_compatible": eu_compat,
+#             "is_switzerland": switzerland_flag,
+#             "resume_match_pct": match_result["match_pct"],
+#         })
+
+#     return jobs
+
+
 def fetch_remotive_jobs() -> list[dict]:
     """
     Fetch and normalize jobs from Remotive's public API.
-    Returns a list of dicts matching our Job shape (un-saved).
+
+    CHANGELOG:
+    - Adicionada validação de URL (validate_url)
+    - Normalização de campos com normalize_text
+    - Pula jobs com URL inválida
     """
     response = httpx.get(REMOTIVE_API_URL, headers=HEADERS, timeout=15)
     response.raise_for_status()
@@ -100,69 +152,29 @@ def fetch_remotive_jobs() -> list[dict]:
 
     jobs = []
     for entry in payload.get("jobs", []):
-        title = entry.get("title", "").strip()
-        company = entry.get("company_name", "").strip()
+        # Normalização defensiva
+        title = normalize_text(entry.get("title", "")) or ""
+        company = normalize_text(entry.get("company_name", ""))
         url = entry.get("url", "").strip()
-        description = entry.get("description", "") or ""
-        # Remotive gives us this directly - no regex needed, unlike WWR
-        location_raw = entry.get("candidate_required_location", "") or ""
+        
+        # Validação de URL - pula jobs com URL inválida
+        if not validate_url(url):
+            continue
+        
+        description = normalize_text(entry.get("description", "")) or ""
+        location_raw = normalize_text(entry.get("candidate_required_location", "")) or ""
         posted_at = _parse_iso_date(entry.get("publication_date", ""))
 
         category, score = categorize_job(title, description)
         eu_compat = classify_eu_compatibility(location_raw)
         switzerland_flag = is_switzerland(location_raw)
         match_result = compute_resume_match(title, description)
-        # Remotive doesn't embed "Headquarters:" in description like WWR does,
-        # so headquarters_raw stays empty here - candidate_required_location
-        # carries the equivalent information for this source, stored separately.
 
         jobs.append({
-            "dedup_hash": make_dedup_hash("remotive", title, company, url),
+            "dedup_hash": make_dedup_hash("remotive", title, company or "", url),
             "source": "remotive",
             "title": title,
-            "company": company,
-            "headquarters_raw": location_raw,  # repurposed: this source's location signal
-            "url": url,
-            "description": description,
-            "posted_at": posted_at,
-            "category": category,
-            "relevance_score": score,
-            "eu_compatible": eu_compat,
-            "is_switzerland": switzerland_flag,
-            "resume_match_pct": match_result["match_pct"],
-        })
-
-    return jobs
-
-
-def fetch_working_nomads_jobs() -> list[dict]:
-    """
-    Fetch and normalize jobs from Working Nomads' public API.
-    Returns a list of dicts matching our Job shape (un-saved).
-    """
-    response = httpx.get(WORKING_NOMADS_API_URL, headers=HEADERS, timeout=15)
-    response.raise_for_status()
-    entries = response.json()
-
-    jobs = []
-    for entry in entries:
-        title = entry.get("title", "").strip()
-        company = entry.get("company_name", "").strip()
-        url = entry.get("url", "").strip()
-        description = entry.get("description", "") or ""
-        location_raw = entry.get("location", "") or ""
-        posted_at = _parse_iso_date(entry.get("pub_date", ""))
-
-        category, score = categorize_job(title, description)
-        eu_compat = classify_eu_compatibility(location_raw)
-        switzerland_flag = is_switzerland(location_raw)
-        match_result = compute_resume_match(title, description)
-
-        jobs.append({
-            "dedup_hash": make_dedup_hash("working_nomads", title, company, url),
-            "source": "working_nomads",
-            "title": title,
-            "company": company,
+            "company": company or "",
             "headquarters_raw": location_raw,
             "url": url,
             "description": description,
@@ -177,15 +189,164 @@ def fetch_working_nomads_jobs() -> list[dict]:
     return jobs
 
 
+# def fetch_working_nomads_jobs() -> list[dict]:
+#     """
+#     Fetch and normalize jobs from Working Nomads' public API.
+#     Returns a list of dicts matching our Job shape (un-saved).
+#     """
+#     response = httpx.get(WORKING_NOMADS_API_URL, headers=HEADERS, timeout=15)
+#     response.raise_for_status()
+#     entries = response.json()
+
+#     jobs = []
+#     for entry in entries:
+#         title = entry.get("title", "").strip()
+#         company = entry.get("company_name", "").strip()
+#         url = entry.get("url", "").strip()
+#         description = entry.get("description", "") or ""
+#         location_raw = entry.get("location", "") or ""
+#         posted_at = _parse_iso_date(entry.get("pub_date", ""))
+
+#         category, score = categorize_job(title, description)
+#         eu_compat = classify_eu_compatibility(location_raw)
+#         switzerland_flag = is_switzerland(location_raw)
+#         match_result = compute_resume_match(title, description)
+
+#         jobs.append({
+#             "dedup_hash": make_dedup_hash("working_nomads", title, company, url),
+#             "source": "working_nomads",
+#             "title": title,
+#             "company": company,
+#             "headquarters_raw": location_raw,
+#             "url": url,
+#             "description": description,
+#             "posted_at": posted_at,
+#             "category": category,
+#             "relevance_score": score,
+#             "eu_compatible": eu_compat,
+#             "is_switzerland": switzerland_flag,
+#             "resume_match_pct": match_result["match_pct"],
+#         })
+
+#     return jobs
+
+
+
+def fetch_working_nomads_jobs() -> list[dict]:
+    """
+    Fetch and normalize jobs from Working Nomads' public API.
+
+    CHANGELOG:
+    - Adicionada validação de URL (validate_url)
+    - Normalização de campos com normalize_text
+    - Pula jobs com URL inválida
+    """
+    response = httpx.get(WORKING_NOMADS_API_URL, headers=HEADERS, timeout=15)
+    response.raise_for_status()
+    entries = response.json()
+
+    jobs = []
+    for entry in entries:
+        title = normalize_text(entry.get("title", "")) or ""
+        company = normalize_text(entry.get("company_name", ""))
+        url = entry.get("url", "").strip()
+        
+        # Validação de URL
+        if not validate_url(url):
+            continue
+        
+        description = normalize_text(entry.get("description", "")) or ""
+        location_raw = normalize_text(entry.get("location", "")) or ""
+        posted_at = _parse_iso_date(entry.get("pub_date", ""))
+
+        category, score = categorize_job(title, description)
+        eu_compat = classify_eu_compatibility(location_raw)
+        switzerland_flag = is_switzerland(location_raw)
+        match_result = compute_resume_match(title, description)
+
+        jobs.append({
+            "dedup_hash": make_dedup_hash("working_nomads", title, company or "", url),
+            "source": "working_nomads",
+            "title": title,
+            "company": company or "",
+            "headquarters_raw": location_raw,
+            "url": url,
+            "description": description,
+            "posted_at": posted_at,
+            "category": category,
+            "relevance_score": score,
+            "eu_compatible": eu_compat,
+            "is_switzerland": switzerland_flag,
+            "resume_match_pct": match_result["match_pct"],
+        })
+
+    return jobs
+
+
+# def fetch_remoteok_jobs() -> list[dict]:
+#     """
+#     Fetch and normalize jobs from RemoteOK's public API.
+#     Returns a list of dicts matching our Job shape (un-saved).
+
+#     Note: RemoteOK is a general-purpose remote job board, not
+#     frontend-specific - most of what comes back will be irrelevant
+#     (legal, video editing, sales, etc). categorize_job() filters this
+#     down same as every other source; no special handling needed here.
+#     """
+#     response = httpx.get(REMOTEOK_API_URL, headers=HEADERS, timeout=15)
+#     response.raise_for_status()
+#     entries = response.json()
+
+#     jobs = []
+#     for entry in entries:
+#         # First element is API metadata (legal notice), not a job -
+#         # confirmed live: it has no "position" field. Skip anything
+#         # missing the fields a real job entry always has.
+#         if "position" not in entry or "url" not in entry:
+#             continue
+
+#         title = (entry.get("position") or "").strip()
+#         company = (entry.get("company") or "").strip()
+#         url = (entry.get("url") or entry.get("apply_url") or "").strip()
+#         description = entry.get("description", "") or ""
+#         location_raw = (entry.get("location") or "").strip()
+
+#         posted_at = None
+#         if entry.get("date"):
+#             posted_at = _parse_iso_date(entry["date"])
+
+#         category, score = categorize_job(title, description)
+#         eu_compat = classify_eu_compatibility(location_raw)
+#         switzerland_flag = is_switzerland(location_raw)
+#         match_result = compute_resume_match(title, description)
+
+#         jobs.append({
+#             "dedup_hash": make_dedup_hash("remoteok", title, company, url),
+#             "source": "remoteok",
+#             "title": title,
+#             "company": company,
+#             "headquarters_raw": location_raw,
+#             "url": url,
+#             "description": description,
+#             "posted_at": posted_at,
+#             "category": category,
+#             "relevance_score": score,
+#             "eu_compatible": eu_compat,
+#             "is_switzerland": switzerland_flag,
+#             "resume_match_pct": match_result["match_pct"],
+#         })
+
+#     return jobs
+
+
 def fetch_remoteok_jobs() -> list[dict]:
     """
     Fetch and normalize jobs from RemoteOK's public API.
-    Returns a list of dicts matching our Job shape (un-saved).
 
-    Note: RemoteOK is a general-purpose remote job board, not
-    frontend-specific - most of what comes back will be irrelevant
-    (legal, video editing, sales, etc). categorize_job() filters this
-    down same as every other source; no special handling needed here.
+    CHANGELOG:
+    - Adicionada validação de URL (validate_url)
+    - Normalização de campos com normalize_text
+    - Pula jobs com URL inválida
     """
     response = httpx.get(REMOTEOK_API_URL, headers=HEADERS, timeout=15)
     response.raise_for_status()
@@ -193,17 +354,20 @@ def fetch_remoteok_jobs() -> list[dict]:
 
     jobs = []
     for entry in entries:
-        # First element is API metadata (legal notice), not a job -
-        # confirmed live: it has no "position" field. Skip anything
-        # missing the fields a real job entry always has.
         if "position" not in entry or "url" not in entry:
             continue
 
-        title = (entry.get("position") or "").strip()
-        company = (entry.get("company") or "").strip()
-        url = (entry.get("url") or entry.get("apply_url") or "").strip()
-        description = entry.get("description", "") or ""
-        location_raw = (entry.get("location") or "").strip()
+        title = normalize_text(entry.get("position", "")) or ""
+        company = normalize_text(entry.get("company", ""))
+        url = entry.get("url") or entry.get("apply_url") or ""
+        url = url.strip()
+        
+        # Validação de URL
+        if not validate_url(url):
+            continue
+        
+        description = normalize_text(entry.get("description", "")) or ""
+        location_raw = normalize_text(entry.get("location", "")) or ""
 
         posted_at = None
         if entry.get("date"):
@@ -215,10 +379,10 @@ def fetch_remoteok_jobs() -> list[dict]:
         match_result = compute_resume_match(title, description)
 
         jobs.append({
-            "dedup_hash": make_dedup_hash("remoteok", title, company, url),
+            "dedup_hash": make_dedup_hash("remoteok", title, company or "", url),
             "source": "remoteok",
             "title": title,
-            "company": company,
+            "company": company or "",
             "headquarters_raw": location_raw,
             "url": url,
             "description": description,
@@ -233,16 +397,60 @@ def fetch_remoteok_jobs() -> list[dict]:
     return jobs
 
 
+# def store_jobs(job_dicts: list[dict]) -> dict:
+#     """Save a list of normalized job dicts, skipping ones already in the DB."""
+#     session = SessionLocal()
+#     counts = {"new": 0, "skipped": 0, "web_frontend": 0, "mobile_dev": 0, "full_stack_react": 0}
+
+#     try:
+#         dedup_hashes = [job_data["dedup_hash"] for job_data in job_dicts]
+#         existing_hashes = get_existing_dedup_hashes(session, dedup_hashes)
+
+#         for job_data in job_dicts:
+#             if job_data["dedup_hash"] in existing_hashes:
+#                 counts["skipped"] += 1
+#                 continue
+
+#             job = Job(**job_data)
+#             session.add(job)
+#             existing_hashes.add(job_data["dedup_hash"])
+#             counts["new"] += 1
+#             if job_data["category"] in ("web_frontend", "mobile_dev", "full_stack_react"):
+#                 counts[job_data["category"]] += 1
+
+#         session.commit()
+#     finally:
+#         session.close()
+
+#     return counts
+
+
 def store_jobs(job_dicts: list[dict]) -> dict:
-    """Save a list of normalized job dicts, skipping ones already in the DB."""
+    """
+    Save a list of normalized job dicts, skipping ones already in the DB.
+
+    CHANGELOG:
+    - Adicionada validação de dados antes de inserir
+    - Pula jobs com título ou URL vazios
+    - Log de quantos jobs foram pulados por validação
+    """
     session = SessionLocal()
     counts = {"new": 0, "skipped": 0, "web_frontend": 0, "mobile_dev": 0, "full_stack_react": 0}
 
     try:
-        dedup_hashes = [job_data["dedup_hash"] for job_data in job_dicts]
+        # Validar cada job antes de inserir
+        validated_jobs = []
+        for job_data in job_dicts:
+            # Validação básica
+            if not job_data.get("title") or not job_data.get("url"):
+                counts["skipped"] += 1
+                continue
+            validated_jobs.append(job_data)
+
+        dedup_hashes = [job_data["dedup_hash"] for job_data in validated_jobs]
         existing_hashes = get_existing_dedup_hashes(session, dedup_hashes)
 
-        for job_data in job_dicts:
+        for job_data in validated_jobs:
             if job_data["dedup_hash"] in existing_hashes:
                 counts["skipped"] += 1
                 continue
