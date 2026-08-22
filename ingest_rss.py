@@ -21,6 +21,9 @@ from models import Job, SessionLocal, init_db
 from relevance import categorize_job, extract_headquarters
 from eu_filter import classify_eu_compatibility, is_switzerland
 from resume_match import compute_resume_match
+from ingest_common import get_existing_dedup_hashes
+
+from validators import normalize_text, validate_url  # NOVO
 
 # Each entry: (source_name, feed_url)
 RSS_SOURCES = [
@@ -34,10 +37,59 @@ def make_dedup_hash(source: str, title: str, company: str, url: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def parse_entry(source_name: str, entry) -> dict:
-    """Normalize one feedparser entry into our Job shape."""
-    title = entry.get("title", "").strip()
+# def parse_entry(source_name: str, entry) -> dict:
+#     """Normalize one feedparser entry into our Job shape."""
+#     title = entry.get("title", "").strip()
 
+#     # WWR formats titles like "Company Name: Job Title"
+#     company = None
+#     job_title = title
+#     if ":" in title:
+#         possible_company, possible_title = title.split(":", 1)
+#         if len(possible_company) < 60:
+#             company = possible_company.strip()
+#             job_title = possible_title.strip()
+
+#     url = entry.get("link", "").strip()
+#     description = entry.get("summary", "").strip()
+
+#     posted_at = None
+#     if entry.get("published_parsed"):
+#         posted_at = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+
+#     headquarters_raw = extract_headquarters(description)
+#     category, score = categorize_job(job_title, description)
+#     eu_compat = classify_eu_compatibility(headquarters_raw)
+#     switzerland_flag = is_switzerland(headquarters_raw)
+#     match_result = compute_resume_match(job_title, description)
+
+#     return {
+#         "dedup_hash": make_dedup_hash(source_name, job_title, company or "", url),
+#         "source": source_name,
+#         "title": job_title,
+#         "company": company,
+#         "headquarters_raw": headquarters_raw,
+#         "url": url,
+#         "description": description,
+#         "posted_at": posted_at,
+#         "category": category,
+#         "relevance_score": score,
+#         "eu_compatible": eu_compat,
+#         "is_switzerland": switzerland_flag,
+#         "resume_match_pct": match_result["match_pct"],
+#     }
+
+
+def parse_entry(source_name: str, entry) -> dict:
+    """Normalize one feedparser entry into our Job shape.
+    
+    CHANGELOG:
+    - Adicionada validação de URL (validate_url)
+    - Normalização de campos com normalize_text
+    - Retorna None para URLs inválidas
+    """
+    title = normalize_text(entry.get("title", "")) or ""
+    
     # WWR formats titles like "Company Name: Job Title"
     company = None
     job_title = title
@@ -48,7 +100,12 @@ def parse_entry(source_name: str, entry) -> dict:
             job_title = possible_title.strip()
 
     url = entry.get("link", "").strip()
-    description = entry.get("summary", "").strip()
+    
+    # Validação de URL
+    if not validate_url(url):
+        return None
+    
+    description = normalize_text(entry.get("summary", "")) or ""
 
     posted_at = None
     if entry.get("published_parsed"):
@@ -77,10 +134,50 @@ def parse_entry(source_name: str, entry) -> dict:
     }
 
 
+
+# def ingest_rss_source(source_name: str, feed_url: str) -> dict:
+#     """
+#     Fetch and store all entries from one RSS feed.
+#     Returns a dict of counts: new, skipped, and per-category totals.
+#     """
+#     feed = feedparser.parse(feed_url)
+
+#     if feed.bozo:
+#         print(f"  [warn] feed parse issue for {source_name}: {feed.bozo_exception}")
+
+#     session = SessionLocal()
+#     counts = {"new": 0, "skipped": 0, "web_frontend": 0, "mobile_dev": 0, "full_stack_react": 0}
+
+#     try:
+#         parsed_jobs = [parse_entry(source_name, entry) for entry in feed.entries]
+#         dedup_hashes = [job_data["dedup_hash"] for job_data in parsed_jobs]
+#         existing_hashes = get_existing_dedup_hashes(session, dedup_hashes)
+
+#         for job_data in parsed_jobs:
+#             if job_data["dedup_hash"] in existing_hashes:
+#                 counts["skipped"] += 1
+#                 continue
+
+#             job = Job(**job_data)
+#             session.add(job)
+#             existing_hashes.add(job_data["dedup_hash"])
+#             counts["new"] += 1
+#             if job_data["category"] in ("web_frontend", "mobile_dev", "full_stack_react"):
+#                 counts[job_data["category"]] += 1
+
+#         session.commit()
+#     finally:
+#         session.close()
+
+#     return counts
+
+
 def ingest_rss_source(source_name: str, feed_url: str) -> dict:
     """
     Fetch and store all entries from one RSS feed.
-    Returns a dict of counts: new, skipped, and per-category totals.
+
+    CHANGELOG:
+    - Filtra entradas com URL inválida (parse_entry retorna None)
     """
     feed = feedparser.parse(feed_url)
 
@@ -91,16 +188,26 @@ def ingest_rss_source(source_name: str, feed_url: str) -> dict:
     counts = {"new": 0, "skipped": 0, "web_frontend": 0, "mobile_dev": 0, "full_stack_react": 0}
 
     try:
+        # Parse entries, filter out invalid ones (None)
+        parsed_jobs = []
         for entry in feed.entries:
             job_data = parse_entry(source_name, entry)
+            if job_data is not None:
+                parsed_jobs.append(job_data)
+            else:
+                counts["skipped"] += 1  # Contabiliza jobs pulados por URL inválida
+        
+        dedup_hashes = [job_data["dedup_hash"] for job_data in parsed_jobs]
+        existing_hashes = get_existing_dedup_hashes(session, dedup_hashes)
 
-            existing = session.query(Job).filter_by(dedup_hash=job_data["dedup_hash"]).first()
-            if existing:
+        for job_data in parsed_jobs:
+            if job_data["dedup_hash"] in existing_hashes:
                 counts["skipped"] += 1
                 continue
 
             job = Job(**job_data)
             session.add(job)
+            existing_hashes.add(job_data["dedup_hash"])
             counts["new"] += 1
             if job_data["category"] in ("web_frontend", "mobile_dev", "full_stack_react"):
                 counts[job_data["category"]] += 1
@@ -110,6 +217,7 @@ def ingest_rss_source(source_name: str, feed_url: str) -> dict:
         session.close()
 
     return counts
+
 
 
 def rescore_existing_jobs():
